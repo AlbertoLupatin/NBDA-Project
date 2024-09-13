@@ -1,0 +1,440 @@
+---
+title: "Project"
+output: html_document
+date: "2024-03-24"
+---
+
+## Retrieving Dataset
+
+```{r}
+setwd("/Users/albertolupatin/Desktop/Network-Based Data Analysis")
+Sys.setenv(PATH = paste("/usr/bin:/bin:/usr/sbin:/sbin", Sys.getenv("PATH"), sep=":"))
+
+library(GEOquery)
+
+gse <- getGEO("GSE6798", destdir = "/Users/albertolupatin/Desktop/Network-Based Data Analysis")
+length(gse)
+gse <- gse[[1]]
+#show(gse)
+
+ex <- exprs(gse)
+#head(ex)
+#dim(ex)
+
+ex <- na.omit(ex)
+
+ex2 <- log2(ex)
+
+samples <- as.data.frame(gse@phenoData@data[["title"]])
+rownames(samples) <- colnames(ex)
+colnames(samples) <- "Sample_Type"
+
+samples$Sample_Type <- gsub("Muscle ", "", samples$Sample_Type)
+
+pdf(file = "Images/Boxplots.pdf")
+boxplot(ex)
+title("Boxplot with not pre-processed data")
+
+boxplot(ex2)
+title("Boxplot with log2 pre-processed data")
+dev.off()
+```
+
+## PCA
+
+```{r}
+pca <- prcomp(t(ex))
+#screeplot(pca) Relative relevance of the PCAs 
+
+pca2 <- prcomp(t(ex2))
+
+grpcol <- c(rep("red", 13), rep("green", 16))
+
+png(file = "Images/PCA/PCA_log2_1_2.png")
+
+plot(pca2$x[, 1], pca2$x[, 2], type="p", 
+     col=grpcol, cex = 1.2, lwd = 2,
+     xlab = "PCA1", ylab = "PCA2")
+title("PCA with log2 pre-processed data")
+legend("bottomright", legend = c("Control", "PCOS"), col = c("red", "green"), lty=1:2, cex=1)
+
+dev.off()
+png(file = "Images/PCA/PCA_log2_1_3.png")
+
+plot(pca2$x[, 1], pca2$x[, 3], type="p", 
+     col=grpcol, cex = 1.2, lwd = 2,
+     xlab = "PCA1", ylab = "PCA3")
+legend("bottomright", legend = c("Control", "PCOS"), col = c("red", "green"), lty=1:2, cex=1)
+title("PCA with log2 pre-processed data")
+
+dev.off()
+png(file = "Images/PCA/PCA_log2_2_3.png")
+
+plot(pca2$x[, 2], pca2$x[, 3], type="p", 
+     col=grpcol, cex = 1.2, lwd = 2,
+     xlab = "PCA2", ylab = "PCA3")
+legend("bottomright", legend = c("Control", "PCOS"), col = c("red", "green"), lty=1:2, cex=1)
+title("PCA with log2 pre-processed data")
+
+dev.off()
+
+```
+
+## K-means Clustering
+
+```{r}
+library(useful)
+k <- 2
+
+# Controlla corrispondenza tra i sample dei grafici e il tipo di sample (high o low BMI)
+
+kmeansresult2 <- kmeans(t(ex2), k)
+table(kmeansresult2$cluster)
+
+#png(file = "K-Means.png")
+
+plot(kmeansresult2, data=t(ex2)) + geom_text(aes(label=samples$Sample_Type, hjust=0,vjust=0))
+
+#dev.off()
+```
+
+## Hierical Clustering
+
+```{r}
+k <- 2
+
+dist_matrix <- dist(t(ex2[, -4]))
+
+hc_result_ave <- hclust(dist_matrix, method="average") # Computing Distance Matrix ; Method = average
+hc_result_mcq <- hclust(dist_matrix, method="mcquitty")
+
+png(file = "Images/Hierical/Hierical_Average.png")
+
+groups_ave <- cutree(hc_result_ave, k=k) #find the exact location to perform the cut
+table(groups_ave)
+
+sample_type_hc <- samples
+sample_type_hc <- sample_type_hc[-4,]
+
+plot(hc_result_ave, hang <- -1, labels = sample_type_hc, 
+     main = "Hierical Clustering - Average Method")
+rect.hclust(hc_result_ave, k = 2, which=NULL, x=NULL, h=NULL, border=2, cluster = NULL)
+
+dev.off()
+png(file = "Images/Hierical/Hierical_Mcquitty.png")
+
+groups_mcq <- cutree(hc_result_mcq, k=k) #find the exact location to perform the cut
+table(groups_mcq)
+
+plot(hc_result_mcq, hang <- -1, labels = sample_type_hc, 
+     main = "Hierical Clustering - McQuitty Method")
+rect.hclust(hc_result_mcq, k = 2, which=NULL, x=NULL, h=NULL, border=2, cluster = NULL)
+
+dev.off()
+```
+
+## Random Forest
+
+```{r}
+group <- c(rep('C',13),rep('A',16)) # C = control ; A = affected
+
+# Remove genes whose value is not > 0 in at least 20% of the samples
+
+# build RF
+library(randomForest)
+
+set.seed(1234) # The randomness is always the same
+
+rf_1000 <- randomForest(x=t(ex2), y=as.factor(group), ntree = 1000)
+rf_600 <- randomForest(x=t(ex2), y=as.factor(group), ntree = 600)
+
+png(file = "Images/Random Forest/RF_1000.png")
+plot(rf_1000, main = "Random Forest with 1000 trees growed")
+dev.off()
+
+png(file = "Images/Random Forest/RF_600.png")
+plot(rf_600)
+dev.off()
+
+# a trivial test
+predict(rf_600, t(ex2[, 1:5]))
+
+# graph of sorted importance values
+png("Images/Random Forest/RF.png")
+plot(sort(rf_600$importance, decreasing = TRUE), ylab = "RF Value") # can also use: varImpPlot(rf)
+dev.off()
+
+#extract the most 'important' genes
+probe.names <- rownames(rf_600$importance)
+top200_p <- probe.names[order(rf_600$importance, decreasing = TRUE)[1:200]]
+write.csv(top200_p, file = "probes-top200.txt", quote=FALSE, row.names = FALSE, col.names=FALSE)
+top200_g <- gse@featureData@data[["Gene Symbol"]][which(rownames(ex2) %in% top200_p)]
+```
+
+
+## LDA + ROC curve
+
+```{r}
+f <- factor(c(rep(0, 13), rep(1, 16)))
+
+library(genefilter)
+tt40 <- rowttests(ex2, f)
+
+keepers <- which(tt40$p.value<0.01)
+
+genes_lda <- rownames(ex2[keepers,])
+tex2 <- t(ex2)
+tex2 <- tex2[, keepers]
+
+dat <- cbind(tex2, c(rep(0, 13), rep(1, 16)))
+colnames(dat)[ncol(dat)] <- "Affected"
+
+n.controls <- 13
+n.test <- 16
+
+train <- sample(1:(n.controls), (n.test-8))
+test <- setdiff(1:(n.controls),train)
+test<- c(test, test+13)
+train <- c(train, train+16)
+
+dat <- as.data.frame(dat)
+
+library(MASS)
+library(graphics)
+
+png("Images/LDA/Projections.png")
+mod <- lda(Affected ~ ., data=dat, prior = c(0.5,0.5), subset = train)
+plot(mod)
+dev.off()
+
+png("Images/LDA/Projections2.png")
+mod.values <- predict(mod, dat[train,])
+plot(mod.values$x[,1], ylab=c("LDA Axis"))
+text(mod.values$x[,1], col=c(as.numeric(dat[train,"Affected"])+10), cex = 1.2)
+abline(h = 0)
+legend("bottomright", legend = c("Control", "PCOS"), col = c("red", "green"), lty=1:2, cex=1)
+dev.off()
+
+preds<-predict(mod, dat[test,])
+preds$class
+
+table(as.numeric(preds$class), as.numeric(dat[test, "Affected"]))
+
+library(pROC)
+png("Images/LDA/pROC.png")
+roc_lda <- plot.roc(as.numeric(preds$class), as.numeric(dat[test, "Affected"]))
+plot(roc_lda, col = "red")
+dev.off()
+```
+
+## CARET
+
+```{r}
+f <- factor(c(rep("No", 13), rep("Affected", 16)))
+
+library(genefilter)
+tt40 <- rowttests(ex2,f)
+
+keepers <- which(tt40$p.value<0.01)
+
+tex2 <- t(ex2)
+tex2 <- tex2[, keepers]
+dat <- cbind(as.data.frame(tex2),f)
+colnames(dat)[ncol(dat)] <- "Affected"
+
+library(caret)
+
+#Run algorithms using 10-fold cross validation
+control <- trainControl(method="cv", number=10)
+metric <- "Accuracy"
+
+fit.lda <- train(Affected~., data=dat, method="lda", metric=metric, trControl=control)
+fit.rf <- train(Affected~., data=dat, method="rf", metric=metric, trControl=control)
+
+results <- resamples(list(LDA=fit.lda, RF=fit.rf))
+summary(results)
+
+png("Images/Caret/Accuracy1.png")
+ggplot(results) + labs(y="Accuracy")
+dev.off()
+
+#Run algorithms using 10-fold cross validation repeated 5 times
+control <- trainControl(method="repeatedcv", number=10, repeats = 5)
+metric <- "Accuracy"
+
+fit.lda.2 <- train(Affected~., data=dat, method="lda", metric=metric, trControl=control)
+fit.rf.2 <- train(Affected~., data=dat, method="rf", metric=metric, trControl=control)
+
+results <- resamples(list(LDA=fit.lda.2, RF=fit.rf.2))
+summary(results)
+
+png("Images/Caret/Accuracy2.png")
+ggplot(results) + labs(y="Accuracy")
+dev.off()
+```
+
+## LASSO
+
+```{r}
+y <- c(rep(0, 13), rep(1, 16))
+
+library(glmnet)
+
+dat <- t(ex2)
+
+png("Images/Lasso/Lambda.png")
+fit <- glmnet(dat, y, standardize = FALSE, family = "binomial")
+plot(fit, xvar = "lambda", label = TRUE)
+dev.off()
+
+png("Images/Lasso/Lambda_cv.png")
+cfit <- cv.glmnet(dat, y, standardize = FALSE, family = "binomial")
+plot(cfit) 
+dev.off()
+
+coef(cfit, s=cfit$lambda.min)
+
+#Repeat analysis but using train + test sample subsets
+n.controls <- 13
+n.exercised <- 16
+
+train <- sample(1:(n.controls), (n.controls-10))
+test <- setdiff(1:(n.controls), train)
+
+test <- c(test, test+13)
+train <- c(train, train+16)
+
+png("Images/Lasso/Lambda_tt.png")
+fit <- glmnet(dat[train, ], y[train], standardize = FALSE, family = "binomial")
+plot(fit)
+dev.off()
+
+png("Images/Lasso/Lambda_tt_cv.png")
+cfit=cv.glmnet(dat[train,],y[train],standardize=FALSE,family="binomial")
+plot(cfit)
+dev.off()
+
+pred <- predict(fit, dat[test, ], type = "class", s = cfit$lambda.min)
+
+#Plot ROCR curve
+library(ROCR)
+
+png("Images/Lasso/ROCR.png")
+pred2 <- predict(fit, dat[test, ], type = "response", s = cfit$lambda.min)
+plot(performance(prediction(pred2, y[test]), "tpr", "fpr"))
+dev.off()
+
+#Compute Area Under the Curve (AUC)
+auc.temp <- performance(prediction(pred2, y[test]), "auc")
+auc <- as.numeric(auc.temp@y.values) 
+auc #Very good value
+```
+
+## CARET + LASSO 
+
+```{r}
+library(caret)
+
+f <- factor(c(rep("No", 13), rep("Affected", 16)))
+
+control <- trainControl(method="cv", number=10)
+metric <- "Affected"
+
+ex3 <- ex2[sample(nrow(ex2), 16000), ]
+
+tex3 <- t(ex3)
+dat3 <- cbind(as.data.frame(tex3),f)
+colnames(dat3)[ncol(dat3)] <- "Affected"
+
+fit.lasso <- train(Affected~., data=dat3, method="glmnet", family = "binomial", 
+                   tuGrid = expand.grid(alpha = 1, lambda = seq(0, 1, by=0.05)), 
+                   trControl = control,
+                   metric = metric)
+
+png("Images/Caret/Lasso.png")
+plot(fit.lasso)
+dev.off()
+
+# comparison with other classification methods
+fit.lda <- train(Affected~., data=dat3, method="lda", metric=metric, trControl=control)
+fit.rf <- train(Affected~., data=dat3, method="rf", metric=metric, trControl=control)
+results <- resamples(list(RF=fit.rf, LDA=fit.lda, Lasso=fit.lasso))
+summary(results)
+
+png("Images/Caret/Accuracy3.png")
+ggplot(results) + labs(y = "Accuracy")
+dev.off()
+```
+
+
+## FUNCTIONAL ANALYSIS
+
+```{r}
+library(gridExtra)
+library(grid)
+
+david <- read.delim("Images/DAVID.txt")
+david <- david[order(david$Benjamini),]
+write.csv(david, "Images/David_ordered.csv")
+```
+
+## RSCUDO + CARET 
+
+```{r}
+library("caret")
+
+set.seed(123)
+inTrain <- createDataPartition(f, list = FALSE)
+trainData <- dat[, inTrain]
+testData <- dat[, -inTrain]
+
+# use caret to test a grid a values for nTop & nBottom
+# using cross validation
+model <- scudoModel(nTop = (2:6)*5, nBottom = (2:6)*5, N = 0.25)
+control <- caret::trainControl(method = "cv", number = 5, 
+                               summaryFunction = caret::multiClassSummary)
+#Metti rownames in trainData
+cvRes <- caret::train(x = t(trainData), y = f[inTrain], method = model, 
+                      trControl = control)
+
+# plot map of testing samples using best nTop & nBottom
+# values
+
+testRes <- scudoTest(trainRes, testData, f[-inTrain], cvRes$bestTune$nTop, cvRes$bestTune$nBottom5)
+testNet <- scudoNetwork(testRes, N = 0.2)  
+scudoPlot(testNet, vertex.label = NA)
+
+# perform classification of testing samples using best
+# nTop & nBottom values
+classRes <- scudoClassify(dat[, inTrain], dat[, -inTrain], 0.25, cvRes$bestTune$nTop,
+                          cvRes$bestTune$nBottom, f[inTrain], alpha = 0.05)
+caret::confusionMatrix(classRes$predicted, f[-inTrain])
+```
+
+## PathFindR
+
+```{r}
+gene_file <- file("gene_list.txt")
+genes <- gse@featureData@data[["Gene Symbol"]]
+genes <- genes[keepers]
+writeLines(genes, gene_file)
+close(gene_file)
+
+enr_table <- read.table("enrichnet_ranking_table.txt", header = TRUE)
+enr_table <- enr_table[,c(1,2)]
+enr_table$Annotation..pathway.process. <- gsub("^hsa[0-9]{5}:", "", enr_table$Annotation..pathway.process.)
+
+enr_table$Annotation..pathway.process. <- as.character(enr_table$Annotation..pathway.process.)
+enr_table$XD.score <- as.numeric(enr_table$XD.score)
+colnames(enr_table) <- c("pathway", "score")
+
+library(ggplot2)
+ggplot(enr_table[1:5,], aes(x = reorder(pathway, score), y = score)) +
+  geom_bar(stat = "identity") +
+  coord_flip() + # Capovolge il grafico per avere le barre orizzontali
+  labs(x = "Pathway", y = "Score", title = "Enrichment Scores by Pathway") +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  scale_fill_gradient(low = "yellow", high = "red")
+ggsave("Images/Enrichment.png")
+```
+
